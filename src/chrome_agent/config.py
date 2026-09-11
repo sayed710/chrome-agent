@@ -44,3 +44,21 @@ def resolve_state_paths(state_root: str | os.PathLike[str] | None = None) -> Sta
         artifacts=root / "artifacts",
         temp=root / "temp",
     )
+
+
+def is_owned_session_directory(path: str | os.PathLike[str], paths: StatePaths) -> bool:
+    """Require an in-root, non-reparse session directory carrying our marker."""
+    candidate = Path(path)
+    try:
+        resolved = candidate.resolve(strict=True)
+        resolved.relative_to(paths.profiles.resolve(strict=True))
+    except (OSError, RuntimeError, ValueError):
+        return False
+    if resolved.is_symlink() or not resolved.is_dir():
+        return False
+    marker = resolved / ".chrome-agent-owned.json"
+    try:
+        import json
+        return json.loads(marker.read_text(encoding="utf-8")).get("session") == resolved.name
+    except (OSError, ValueError, json.JSONDecodeError):
+        return False

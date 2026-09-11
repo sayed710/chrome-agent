@@ -70,3 +70,28 @@ def test_windows_chrome_discovery_precedence_and_spaces(monkeypatch):
     assert launcher.find_chrome_binary() == hkcu
     monkeypatch.setattr(launcher, "_windows_hkcu_chrome", lambda: None)
     assert launcher.find_chrome_binary() == local
+
+
+def test_windows_ownership_requires_pid_start_executable_and_profile(monkeypatch):
+    """PID alone is never enough evidence to stop a managed Windows browser."""
+    from chrome_agent import utils
+
+    class Process:
+        def create_time(self): return 123.0
+        def exe(self): return r"D:\Chrome\chrome.exe"
+        def cmdline(self): return ["chrome.exe", "--user-data-dir=D:\\owned\\profile", "--remote-debugging-port=9333", "--remote-debugging-address=127.0.0.1"]
+
+    class Psutil:
+        NoSuchProcess = RuntimeError
+        AccessDenied = PermissionError
+        def Process(self, pid): return Process()
+
+    monkeypatch.setattr(utils, "psutil", Psutil())
+    assert utils.windows_process_matches_owned_browser(
+        pid=42, expected_start="123.0", expected_executable=r"D:\Chrome\chrome.exe",
+        expected_profile=r"D:\owned\profile", expected_port=9333,
+    )
+    assert not utils.windows_process_matches_owned_browser(
+        pid=42, expected_start="different", expected_executable=r"D:\Chrome\chrome.exe",
+        expected_profile=r"D:\owned\profile", expected_port=9333,
+    )

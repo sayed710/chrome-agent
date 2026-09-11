@@ -166,6 +166,8 @@ async def launch_browser(
 
     # Phase 3: Prepare launch arguments
     session_dir = tempfile.mkdtemp(prefix="session-", dir=str(paths.profiles))
+    with open(os.path.join(session_dir, ".chrome-agent-owned.json"), "w", encoding="utf-8") as marker:
+        json.dump({"session": os.path.basename(session_dir)}, marker)
 
     # Write Chrome preferences to disable password save prompts
     default_dir = os.path.join(session_dir, "Default")
@@ -256,6 +258,7 @@ async def launch_browser(
         port_override=port,
         registry_path=active_registry,
         pid_start=pid_start,
+        browser_path=binary,
     )
 
     # Phase 8: Spawn the per-instance supervisor (headed launches only). It is a

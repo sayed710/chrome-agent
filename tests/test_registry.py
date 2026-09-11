@@ -7,6 +7,7 @@ the real registry at /tmp/chrome-agent/registry.json.
 import json
 import os
 import socket
+import sys
 import threading
 
 import pytest
@@ -57,7 +58,7 @@ def test_register_and_lookup(tmp_path):
 def _dead_pid() -> int:
     """A PID guaranteed not to be running (spawned, then reaped)."""
     import subprocess
-    p = subprocess.Popen(["true"])
+    p = subprocess.Popen([sys.executable, "-c", "pass"])
     p.wait()
     return p.pid
 
@@ -309,11 +310,14 @@ def test_enumerate_mixed_liveness(tmp_path):
     assert alive_map["proj-02"] is False
 
 
-def test_cleanup_removes_stale(tmp_path):
+def test_cleanup_removes_stale(tmp_path, monkeypatch):
     """Cleanup removes dead instances and their session directories."""
     reg_path = str(tmp_path / "registry.json")
-    session_dir = str(tmp_path / "stale-session")
-    os.makedirs(session_dir)
+    monkeypatch.setenv("CHROME_AGENT_STATE_ROOT", str(tmp_path / "state"))
+    session = tmp_path / "state" / "profiles" / "session-stale"
+    session.mkdir(parents=True)
+    (session / ".chrome-agent-owned.json").write_text('{"session":"session-stale"}')
+    session_dir = str(session)
 
     registry = {
         "proj-01": {

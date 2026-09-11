@@ -357,6 +357,7 @@ async def test_event_isolation(browser_session):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.skipif(os.name == "nt", reason="requires POSIX select() on pipes and SIGTERM delivery")
 def test_attach_sigterm_exits_while_idle(tmp_path):
     """A SIGTERM must terminate an idle attach session promptly.
 
@@ -497,6 +498,7 @@ def test_liveness_verdict_unknown_registry_does_not_exit(monkeypatch):
     assert _liveness_verdict(_info(), None) is None
 
 
+@pytest.mark.skipif(os.name == "nt", reason="requires POSIX select() on subprocess pipes")
 def test_attach_exits_when_instance_retired(tmp_path):
     """End-to-end: attach exits when its instance is deregistered, browser alive.
 

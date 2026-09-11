@@ -7,6 +7,8 @@ not have dependencies on other chrome-agent modules to avoid circular imports.
 import os
 import subprocess
 
+import psutil
+
 
 def process_is_running(pid: int) -> bool:
     """Check if a process with the given PID is running.
@@ -15,10 +17,15 @@ def process_is_running(pid: int) -> bool:
     Returns True if the process exists, False if it does not.
     Returns True on PermissionError (process exists but we can't signal it).
     """
+    if os.name == "nt":
+        try:
+            return psutil.Process(pid).is_running()
+        except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
+            return False
     try:
         os.kill(pid, 0)
         return True
-    except ProcessLookupError:
+    except (ProcessLookupError, OSError):
         return False
     except PermissionError:
         return True
@@ -38,6 +45,14 @@ def process_is_ours(pid: int, expected_start: str | None = None) -> bool:
     an unrelated host process -- often a root kernel thread -- which must
     never be treated as, or signalled as, our browser.
     """
+    if os.name == "nt":
+        try:
+            process = psutil.Process(pid)
+            if process.username() != psutil.Process().username():
+                return False
+            return expected_start is None or str(process.create_time()) == expected_start
+        except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
+            return False
     try:
         os.kill(pid, 0)
     except (ProcessLookupError, PermissionError, OSError):
@@ -60,6 +75,10 @@ def process_start_time(pid: int) -> str | None:
     a mismatch.
     """
     try:
+        return str(psutil.Process(pid).create_time())
+    except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
+        pass
+    try:
         with open(f"/proc/{pid}/stat") as f:
             stat = f.read()
         # Fields after the (comm) -- which may itself contain spaces/parens --
@@ -78,3 +97,27 @@ def process_start_time(pid: int) -> str | None:
         return value or None
     except Exception:
         return None
+
+
+def windows_process_matches_owned_browser(
+    *, pid: int, expected_start: str | None, expected_executable: str,
+    expected_profile: str, expected_port: int,
+) -> bool:
+    """Verify all Windows ownership evidence before a destructive action.
+
+    An unreadable or incomplete process record is deliberately a mismatch.
+    """
+    try:
+        process = psutil.Process(pid)
+        if expected_start is None or str(process.create_time()) != expected_start:
+            return False
+        if os.path.normcase(os.path.abspath(process.exe())) != os.path.normcase(os.path.abspath(expected_executable)):
+            return False
+        argv = process.cmdline()
+    except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
+        return False
+    return (
+        f"--user-data-dir={expected_profile}" in argv
+        and f"--remote-debugging-port={expected_port}" in argv
+        and "--remote-debugging-address=127.0.0.1" in argv
+    )

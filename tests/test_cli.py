@@ -745,7 +745,7 @@ def test_completions_methods_reads_the_live_protocol(tmp_path, monkeypatch, caps
     """Methods come from the running browser, one Domain.method per line."""
     from chrome_agent import cli
 
-    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+    monkeypatch.setenv("CHROME_AGENT_STATE_ROOT", str(tmp_path / "state"))
     _fake_instance(monkeypatch)
     monkeypatch.setattr("chrome_agent.protocol.fetch_protocol_schema", lambda port: SCHEMA_FIXTURE)
 
@@ -766,7 +766,7 @@ def test_completions_events_reads_the_event_list(tmp_path, monkeypatch, capsys):
     """Events come from the same schema, from the events key rather than commands."""
     from chrome_agent import cli
 
-    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+    monkeypatch.setenv("CHROME_AGENT_STATE_ROOT", str(tmp_path / "state"))
     _fake_instance(monkeypatch)
     monkeypatch.setattr("chrome_agent.protocol.fetch_protocol_schema", lambda port: SCHEMA_FIXTURE)
 
@@ -784,7 +784,7 @@ def test_completions_methods_cache_avoids_a_second_fetch(tmp_path, monkeypatch, 
     """
     from chrome_agent import cli
 
-    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+    monkeypatch.setenv("CHROME_AGENT_STATE_ROOT", str(tmp_path / "state"))
     _fake_instance(monkeypatch)
 
     calls = []
@@ -802,7 +802,7 @@ def test_completions_methods_cache_avoids_a_second_fetch(tmp_path, monkeypatch, 
 
     assert calls == [9222], "the cached call still fetched from the browser"
     assert second == first, "the cache served different bytes than the fetch"
-    cached = tmp_path / "chrome-agent" / "protocol-Chrome-151.0.0.1-commands.txt"
+    cached = tmp_path / "state" / "cache" / "chrome-agent" / "protocol-Chrome-151.0.0.1-commands.txt"
     assert cached.exists()
 
 
@@ -810,7 +810,7 @@ def test_completions_methods_cache_key_follows_the_browser_version(tmp_path, mon
     """A Chrome upgrade changes the key, so the stale protocol is never served."""
     from chrome_agent import cli
 
-    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+    monkeypatch.setenv("CHROME_AGENT_STATE_ROOT", str(tmp_path / "state"))
     monkeypatch.setattr("chrome_agent.protocol.fetch_protocol_schema", lambda port: SCHEMA_FIXTURE)
 
     _fake_instance(monkeypatch, version="Chrome/151.0.0.1")
@@ -821,7 +821,7 @@ def test_completions_methods_cache_key_follows_the_browser_version(tmp_path, mon
     cli._run_completions(args=["methods", "mysite-01"])
     capsys.readouterr()
 
-    names = sorted(p.name for p in (tmp_path / "chrome-agent").iterdir())
+    names = sorted(p.name for p in (tmp_path / "state" / "cache" / "chrome-agent").iterdir())
     assert names == [
         "protocol-Chrome-151.0.0.1-commands.txt",
         "protocol-Chrome-152.0.0.1-commands.txt",

@@ -17,6 +17,7 @@ import tempfile
 import pytest
 
 from chrome_agent.connection import check_cdp_port
+from chrome_agent.config import resolve_state_paths
 from chrome_agent.launcher import (
     BrowserNotFoundError,
     _SESSION_ROOT,
@@ -53,6 +54,10 @@ async def _kill_browser_on_port(port: int) -> None:
 def cleanup_after_test():
     """Ensure any launched browser is cleaned up after each test."""
     yield
+    if os.name == "nt":
+        # lsof is a Linux-only teardown mechanism. Windows launch tests stop
+        # their registered browser through the ownership-verifying API.
+        return
     import subprocess
     result = subprocess.run(
         ["lsof", "-ti", f":{LAUNCH_PORT}"],
@@ -101,7 +106,7 @@ async def test_successful_launch(tmp_path):
         assert result.port == LAUNCH_PORT
         assert result.pid > 0
         assert result.name == "testproject-01"
-        assert result.user_data_dir.startswith(_SESSION_ROOT)
+        assert result.user_data_dir.startswith(str(resolve_state_paths().profiles))
 
         # Verify browser is running
         status = check_cdp_port(port=LAUNCH_PORT)
@@ -215,6 +220,7 @@ async def test_instance_naming(tmp_path):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.skipif(os.name == "nt", reason="requires Linux SingletonLock /proc ownership attribution")
 def test_cleanup_removes_stale_dirs(tmp_path):
     """Removes session directories with no running Chrome process."""
     stale_dir = os.path.join(_SESSION_ROOT, "session-stale-test")

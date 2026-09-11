@@ -16,12 +16,13 @@ import os
 import re
 import shutil
 import socket
+import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .config import resolve_state_paths
-from .utils import process_is_ours
+from .config import is_owned_session_directory, resolve_state_paths
+from .utils import process_is_ours, process_is_running, windows_process_matches_owned_browser
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +47,7 @@ class InstanceInfo:
     user_data_dir: str = ""
     alive: bool = True
     pid_start: str | None = None
+    browser_path: str = ""
 
 
 class InstanceNotFoundError(Exception):
@@ -258,6 +260,7 @@ def _instance_is_alive(
     pid: int,
     port: int,
     pid_start: str | None = None,
+    browser_path: str = "",
     user_data_dir: str = "",
 ) -> bool:
     """Whether a registered instance is still usable.
@@ -353,6 +356,7 @@ def register(
     port_override: int | None = None,
     registry_path: str | None = None,
     pid_start: str | None = None,
+    browser_path: str = "",
 ) -> InstanceInfo:
     """Register a new browser instance in the registry.
 
@@ -377,6 +381,7 @@ def register(
         "user_data_dir": user_data_dir,
         "launched": datetime.now(timezone.utc).isoformat(),
         "pid_start": pid_start,
+        "browser_path": browser_path,
     }
     _save_registry(registry, path)
 
@@ -389,6 +394,7 @@ def register(
         browser_version=browser_version,
         user_data_dir=user_data_dir,
         pid_start=pid_start,
+        browser_path=browser_path,
     )
 
 
@@ -415,6 +421,7 @@ def lookup(
         entry["pid"],
         entry["port"],
         pid_start=entry.get("pid_start"),
+        browser_path=entry.get("browser_path", ""),
         user_data_dir=entry.get("user_data_dir", ""),
     )
 
@@ -426,6 +433,7 @@ def lookup(
         user_data_dir=entry.get("user_data_dir", ""),
         alive=alive,
         pid_start=entry.get("pid_start"),
+        browser_path=entry.get("browser_path", ""),
     )
 
 
@@ -442,6 +450,7 @@ def enumerate_instances(
             entry["pid"],
             entry["port"],
             pid_start=entry.get("pid_start"),
+            browser_path=entry.get("browser_path", ""),
             user_data_dir=entry.get("user_data_dir", ""),
         )
         results.append(InstanceInfo(
@@ -452,6 +461,7 @@ def enumerate_instances(
             user_data_dir=entry.get("user_data_dir", ""),
             alive=alive,
             pid_start=entry.get("pid_start"),
+            browser_path=entry.get("browser_path", ""),
         ))
     return results
 
@@ -468,6 +478,7 @@ def instance_is_alive(info: InstanceInfo) -> bool:
         info.pid,
         info.port,
         pid_start=info.pid_start,
+        browser_path=info.browser_path,
         user_data_dir=info.user_data_dir,
     )
 
@@ -528,6 +539,18 @@ def stop(
 
     path = _resolve_path(registry_path)
     info = lookup(instance_name=instance_name, registry_path=registry_path)
+
+    # Windows has no /proc attribution. Refuse all destructive lifecycle work
+    # unless the process still proves the recorded launch identity.
+    if sys.platform == "win32" and (
+        not info.browser_path
+        or not windows_process_matches_owned_browser(
+            pid=info.pid, expected_start=info.pid_start,
+            expected_executable=info.browser_path,
+            expected_profile=info.user_data_dir, expected_port=info.port,
+        )
+    ):
+        return f"{instance_name} ownership could not be verified; left untouched"
 
     if not info.alive:
         # Already dead -- just clean up the registry entry
@@ -706,6 +729,15 @@ def cleanup(
 
     removed = []
     for name, entry in list(registry.items()):
+        if sys.platform == "win32":
+            # A live or ambiguous PID is never destructively cleaned. A dead
+            # PID may be cleaned only when the stored directory carries our
+            # marker and resolves inside this invocation's state root.
+            if process_is_running(entry["pid"]) or not is_owned_session_directory(
+                entry.get("user_data_dir", ""), resolve_state_paths()
+            ):
+                logger.warning("Skipping cleanup for %s: Windows ownership is not proven", name)
+                continue
         if not _instance_is_alive(
             entry["pid"],
             entry["port"],
