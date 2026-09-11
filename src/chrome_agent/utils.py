@@ -40,7 +40,7 @@ def process_is_ours(pid: int, expected_start: str | None = None) -> bool:
     """
     try:
         os.kill(pid, 0)
-    except (ProcessLookupError, PermissionError):
+    except (ProcessLookupError, PermissionError, OSError):
         return False
     if expected_start is not None:
         actual = process_start_time(pid=pid)

@@ -13,6 +13,9 @@ import json
 import os
 import sys
 
+from .config import STATE_ROOT_ENV
+from .config import resolve_state_paths
+
 
 # Operational commands -- checked first during routing
 OPERATIONAL_COMMANDS = {"launch", "status", "attach", "help", "cleanup", "stop", "guide", "completions"}
@@ -226,9 +229,7 @@ def _protocol_cache_path(*, browser_version: str, kind: str):
 
     if not browser_version:
         return None
-    base = os.environ.get("XDG_CACHE_HOME") or os.path.join(
-        os.path.expanduser("~"), ".cache"
-    )
+    base = resolve_state_paths().cache
     safe = re.sub(r"[^A-Za-z0-9._-]", "-", browser_version)
     return Path(base) / "chrome-agent" / f"protocol-{safe}-{kind}.txt"
 
@@ -278,6 +279,7 @@ async def _run_launch(args: list[str]) -> None:
     from .launcher import BrowserNotFoundError, launch_browser
 
     fingerprint_path = None
+    chrome_binary = None
     headless = False
     port_override = None
     window_border = True
@@ -290,6 +292,9 @@ async def _run_launch(args: list[str]) -> None:
             break
         elif args[i] == "--fingerprint" and i + 1 < len(args):
             fingerprint_path = args[i + 1]
+            i += 2
+        elif args[i] == "--chrome-binary" and i + 1 < len(args):
+            chrome_binary = args[i + 1]
             i += 2
         elif args[i] == "--headless":
             headless = True
@@ -315,6 +320,7 @@ async def _run_launch(args: list[str]) -> None:
             headless=headless,
             extra_args=extra_args,
             window_border=window_border,
+            chrome_binary=chrome_binary,
         )
     except (BrowserNotFoundError, RuntimeError, TimeoutError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
@@ -674,8 +680,18 @@ async def _run_cdp_one_shot(
 
 def main() -> None:
     """CLI entry point."""
+    raw_args = sys.argv[1:]
+    if raw_args[:1] == ["--state-root"]:
+        if len(raw_args) < 2 or not raw_args[1]:
+            print("Error: --state-root requires a path", file=sys.stderr)
+            sys.exit(1)
+        # Deliberately process-scoped: child commands inherit the configured
+        # root without changing the user's persistent environment.
+        os.environ[STATE_ROOT_ENV] = raw_args[1]
+        raw_args = raw_args[2:]
+
     # Phase 0: Extract the target-selection flags before routing
-    args, target_spec, target_by = _extract_flags(sys.argv[1:])
+    args, target_spec, target_by = _extract_flags(raw_args)
 
     if args and args[0] in ("--version", "-V"):
         from . import __version__

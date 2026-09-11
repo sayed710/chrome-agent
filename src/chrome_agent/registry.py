@@ -20,11 +20,13 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .config import resolve_state_paths
 from .utils import process_is_ours
 
 logger = logging.getLogger(__name__)
 
-REGISTRY_PATH = "/tmp/chrome-agent/registry.json"
+_UPSTREAM_REGISTRY_PATH = "/tmp/chrome-agent/registry.json"
+REGISTRY_PATH = _UPSTREAM_REGISTRY_PATH
 
 # Characters that make an instance argument a glob pattern rather than a
 # literal name. Instance names are derived from directory basenames, which
@@ -162,7 +164,14 @@ def resolve_instance_name(
 
 def _resolve_path(registry_path: str | None) -> str:
     """Resolve registry path, using default if None."""
-    return registry_path if registry_path is not None else REGISTRY_PATH
+    if registry_path is not None:
+        return registry_path
+    # Preserve the upstream test seam when it explicitly monkeypatches the
+    # historical constant, while normal runtime state is centralized under the
+    # configured root.
+    if REGISTRY_PATH != _UPSTREAM_REGISTRY_PATH:
+        return REGISTRY_PATH
+    return str(resolve_state_paths().registry)
 
 
 def _load_registry(registry_path: str) -> dict:
@@ -183,7 +192,7 @@ def _save_registry(registry: dict, registry_path: str) -> None:
     tmp_path = registry_path + ".tmp"
     with open(tmp_path, "w") as f:
         json.dump(registry, f, indent=2)
-    os.rename(tmp_path, registry_path)
+    os.replace(tmp_path, registry_path)
 
 
 def _port_is_listening(port: int) -> bool:

@@ -15,6 +15,7 @@ import sys
 import tempfile
 
 from .connection import check_cdp_port
+from .config import resolve_state_paths
 from .registry import REGISTRY_PATH, InstanceInfo, allocate_port, register, cleanup
 from .registry import _load_registry, _resolve_path
 from .utils import process_is_ours, process_is_running, process_start_time
@@ -22,6 +23,7 @@ from .utils import process_is_ours, process_is_running, process_start_time
 logger = logging.getLogger(__name__)
 
 _SESSION_ROOT = "/tmp/chrome-agent"
+CHROME_BINARY_ENV = "CHROME_AGENT_CHROME_BINARY"
 
 
 class BrowserNotFoundError(Exception):
@@ -35,14 +37,38 @@ class BrowserNotFoundError(Exception):
         )
 
 
-def find_chrome_binary() -> str | None:
+def _is_executable(path: str) -> bool:
+    """Return whether *path* is a runnable Chrome binary."""
+    return os.path.isfile(path) and os.access(path, os.X_OK)
+
+
+def _windows_hkcu_chrome() -> str | None:
+    """Find Chrome through the per-user App Paths registration."""
+    try:
+        import winreg
+
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\chrome.exe",
+        ) as key:
+            value, _ = winreg.QueryValueEx(key, None)
+            return str(value)
+    except (ImportError, OSError):
+        return None
+
+
+def find_chrome_binary(chrome_binary: str | None = None) -> str | None:
     """Search platform-specific paths for Chrome/Chromium.
 
     Returns the path to the first found executable, or None.
     """
+    explicit = chrome_binary or os.environ.get(CHROME_BINARY_ENV)
+    if explicit:
+        return explicit if _is_executable(explicit) else None
+
     candidates = _platform_candidates()
     for path in candidates:
-        if os.path.isfile(path) and os.access(path, os.X_OK):
+        if _is_executable(path):
             return path
     return None
 
@@ -63,10 +89,20 @@ def _platform_candidates() -> list[str]:
             "/Applications/Chromium.app/Contents/MacOS/Chromium",
         ]
     elif sys.platform == "win32":
-        return [
+        hkcu = _windows_hkcu_chrome()
+        local_app_data = os.environ.get("LOCALAPPDATA")
+        candidates = []
+        if hkcu:
+            candidates.append(hkcu)
+        if local_app_data:
+            candidates.append(os.path.join(
+                local_app_data, "Google", "Chrome", "Application", "chrome.exe"
+            ))
+        candidates.extend([
             r"C:\Program Files\Google\Chrome\Application\chrome.exe",
             r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
-        ]
+        ])
+        return candidates
     return []
 
 
@@ -79,6 +115,8 @@ async def launch_browser(
     registry_path: str | None = None,
     extra_args: list[str] | None = None,
     window_border: bool = True,
+    state_root: str | None = None,
+    chrome_binary: str | None = None,
 ) -> InstanceInfo:
     """Launch Chrome with CDP enabled and register as a named instance.
 
@@ -98,9 +136,17 @@ async def launch_browser(
     """
 
     # Phase 1: Find Chrome binary
-    binary = find_chrome_binary()
+    binary = find_chrome_binary(chrome_binary) if chrome_binary else find_chrome_binary()
     if binary is None:
         raise BrowserNotFoundError(searched_paths=_platform_candidates())
+
+    paths = resolve_state_paths(state_root)
+    # Make every owned location eagerly so an unavailable D: root fails before
+    # Chrome is started; there is intentionally no temp-directory fallback.
+    for directory in (paths.sessions, paths.registry.parent, paths.profiles,
+                      paths.cache, paths.artifacts, paths.temp):
+        directory.mkdir(parents=True, exist_ok=True)
+    active_registry = registry_path or str(paths.registry)
 
     # Prune truly-dead instances first (fallback for browsers whose supervisor
     # was killed, and for headless instances which have no supervisor), and
@@ -108,19 +154,18 @@ async def launch_browser(
     # profile files past the supervisor's removal window). With the pid-OR-port
     # liveness check and the SingletonLock pid check, this only removes
     # genuinely-gone browsers, and it frees their names/ports for reuse.
-    cleanup_sessions(registry_path=registry_path)
+    cleanup_sessions(registry_path=active_registry, state_root=str(paths.root))
 
     # Phase 2: Allocate port
     if port_override is not None:
         port = port_override
     else:
-        reg_path = _resolve_path(registry_path)
+        reg_path = _resolve_path(active_registry)
         registry_data = _load_registry(reg_path)
         port = allocate_port(registry=registry_data)
 
     # Phase 3: Prepare launch arguments
-    os.makedirs(_SESSION_ROOT, exist_ok=True)
-    session_dir = tempfile.mkdtemp(prefix="session-", dir=_SESSION_ROOT)
+    session_dir = tempfile.mkdtemp(prefix="session-", dir=str(paths.profiles))
 
     # Write Chrome preferences to disable password save prompts
     default_dir = os.path.join(session_dir, "Default")
@@ -137,6 +182,7 @@ async def launch_browser(
     args = [
         binary,
         f"--remote-debugging-port={port}",
+        "--remote-debugging-address=127.0.0.1",
         f"--user-data-dir={session_dir}",
         "--no-first-run",
         "--no-default-browser-check",
@@ -145,6 +191,9 @@ async def launch_browser(
     if headless:
         args.append("--headless=new")
     if extra_args:
+        forbidden = ("--user-data-dir", "--remote-debugging-port", "--remote-debugging-address")
+        if any(arg.split("=", 1)[0] in forbidden for arg in extra_args):
+            raise ValueError("managed Chrome profile and CDP bind cannot be overridden")
         args.extend(extra_args)
 
     # Apply fingerprint via Chrome command-line flags (persistent)
@@ -205,7 +254,7 @@ async def launch_browser(
         browser_version=status.browser_version or "unknown",
         user_data_dir=session_dir,
         port_override=port,
-        registry_path=registry_path,
+        registry_path=active_registry,
         pid_start=pid_start,
     )
 
@@ -221,19 +270,19 @@ async def launch_browser(
     #     where DOM/title-diffing detectors live. See the detection audit.
     # Headless launches get no supervisor (no window to close or mark); their
     # registry entries are reclaimed by the launch-time prune above / cleanup.
-    if not headless:
+    if not headless and sys.platform != "win32":
         from .supervisor import spawn_supervisor
         spawn_supervisor(
             port=port,
             name=instance_info.name,
-            registry_path=_resolve_path(registry_path),
+            registry_path=active_registry,
             draw_border=window_border and fp_profile is None,
         )
 
     return instance_info
 
 
-def cleanup_sessions(registry_path: str | None = None) -> list[str]:
+def cleanup_sessions(registry_path: str | None = None, state_root: str | None = None) -> list[str]:
     """Remove stale instances and their session directories.
 
     Delegates to the Instance Registry's cleanup() which removes stale
@@ -245,7 +294,10 @@ def cleanup_sessions(registry_path: str | None = None) -> list[str]:
     Returns the list of removed instance names from the registry.
     """
     # Registry cleanup (iteration 2)
-    removed = cleanup(registry_path=registry_path)
+    paths = resolve_state_paths(state_root)
+    session_root = str(paths.profiles)
+    active_registry = registry_path or str(paths.registry)
+    removed = cleanup(registry_path=active_registry)
 
     # Session dirs still referenced by a registry entry (i.e. instances the
     # cleanup above judged alive) are never orphans. Without this guard, the
@@ -253,7 +305,7 @@ def cleanup_sessions(registry_path: str | None = None) -> list[str]:
     # browser: its lock records a namespace-local PID, which on the host can
     # alias to a dead or foreign process -- and the sweep would delete the
     # profile out from under a running browser.
-    registry_data = _load_registry(_resolve_path(registry_path))
+    registry_data = _load_registry(_resolve_path(active_registry))
     tracked_dirs = {e.get("user_data_dir") for e in registry_data.values()}
     # The session root is shared by ALL registries: callers (tests, tools) can
     # pass an isolated registry path, but their sweep still walks the global
@@ -261,14 +313,14 @@ def cleanup_sessions(registry_path: str | None = None) -> list[str]:
     # isolated-registry invocation reads default-registry dirs as "untracked"
     # and deletes profile dirs out from under live registered browsers (whose
     # recreated-after-deletion dirs carry no SingletonLock to protect them).
-    if _resolve_path(registry_path) != REGISTRY_PATH:
+    if _resolve_path(active_registry) != REGISTRY_PATH:
         default_data = _load_registry(REGISTRY_PATH)
         tracked_dirs |= {e.get("user_data_dir") for e in default_data.values()}
 
     # Legacy cleanup: remove session dirs not tracked by the registry
-    if os.path.isdir(_SESSION_ROOT):
-        for entry in os.listdir(_SESSION_ROOT):
-            session_dir = os.path.join(_SESSION_ROOT, entry)
+    if os.path.isdir(session_root):
+        for entry in os.listdir(session_root):
+            session_dir = os.path.join(session_root, entry)
             if not os.path.isdir(session_dir):
                 continue
             # Skip the registry file itself
