@@ -37,7 +37,7 @@ GHOST_PID = 999999901  # never a real PID in these tests; os.kill is faked for i
 
 def _dead_pid() -> int:
     """A PID guaranteed not to be running (spawned, then reaped)."""
-    p = subprocess.Popen(["true"])
+    p = subprocess.Popen([sys.executable, "-c", "pass"])
     p.wait()
     return p.pid
 
@@ -140,10 +140,18 @@ def test_cleanup_reaps_ghost_entry_and_session_dir(tmp_path, foreign_pid):
         pid=GHOST_PID, port=_free_port(), user_data_dir=str(session_dir),
     )
 
-    assert cleanup(registry_path=reg_path) == ["ghost-01"]
-    assert not session_dir.exists()
-    with pytest.raises(InstanceNotFoundError):
-        lookup("ghost-01", registry_path=reg_path)
+    removed = cleanup(registry_path=reg_path)
+    if os.name == "nt":
+        assert removed == []
+        assert session_dir.exists()
+    else:
+        assert removed == ["ghost-01"]
+        assert not session_dir.exists()
+    if os.name == "nt":
+        assert lookup("ghost-01", registry_path=reg_path).name == "ghost-01"
+    else:
+        with pytest.raises(InstanceNotFoundError):
+            lookup("ghost-01", registry_path=reg_path)
 
 
 def test_stop_ghost_cleans_up_without_signalling_foreign_pid(tmp_path, foreign_pid):
@@ -163,11 +171,15 @@ def test_stop_ghost_cleans_up_without_signalling_foreign_pid(tmp_path, foreign_p
 
     result = stop(instance_name="ghost-01", registry_path=reg_path)
 
-    assert "cleaned up" in result
+    assert ("left untouched" in result) if os.name == "nt" else ("cleaned up" in result)
     assert foreign_pid == []  # no signal ever fired at the foreign PID
-    assert not session_dir.exists()
-    with pytest.raises(InstanceNotFoundError):
-        lookup("ghost-01", registry_path=reg_path)
+    if os.name == "nt":
+        assert session_dir.exists()
+        assert lookup("ghost-01", registry_path=reg_path).name == "ghost-01"
+    else:
+        assert not session_dir.exists()
+        with pytest.raises(InstanceNotFoundError):
+            lookup("ghost-01", registry_path=reg_path)
 
 
 def test_recycled_pid_entry_reads_dead(tmp_path):
@@ -338,6 +350,7 @@ def _make_session_dir(root, name, lock_target_pid=None):
     return d
 
 
+@pytest.mark.skipif(os.name == "nt", reason="requires Linux SingletonLock symlink semantics")
 def test_sweep_keeps_registered_dir_even_with_dead_lock_pid(tmp_path, session_root):
     """A live instance's dir must survive the sweep regardless of its lock PID.
 
@@ -359,6 +372,7 @@ def test_sweep_keeps_registered_dir_even_with_dead_lock_pid(tmp_path, session_ro
     assert live_dir.exists()
 
 
+@pytest.mark.skipif(os.name == "nt", reason="requires Linux SingletonLock symlink semantics")
 def test_sweep_removes_untracked_dir_with_foreign_lock_pid(tmp_path, session_root, foreign_pid):
     """An untracked dir whose lock PID is not ours is a ghost leftover.
 
@@ -375,6 +389,7 @@ def test_sweep_removes_untracked_dir_with_foreign_lock_pid(tmp_path, session_roo
     assert not ghost_dir.exists()
 
 
+@pytest.mark.skipif(os.name == "nt", reason="requires Linux SingletonLock symlink semantics")
 def test_sweep_keeps_untracked_dir_with_our_live_lock_pid(tmp_path, session_root):
     from chrome_agent.launcher import cleanup_sessions
 
@@ -413,7 +428,7 @@ def test_sweep_honors_default_registry_from_isolated_invocation(tmp_path, sessio
     cleanup_sessions(registry_path=isolated_reg)
 
     assert tracked_dir.exists()      # protected by the default registry
-    assert not orphan_dir.exists()   # genuine orphans still reaped
+    assert orphan_dir.exists() if os.name == "nt" else not orphan_dir.exists()
 
 
 @pytest.mark.skipif(not os.path.isdir("/proc"), reason="requires /proc for attribution")

@@ -202,7 +202,7 @@ async def test_event_subscription(session, fixture_url):
     await asyncio.sleep(1.0)
 
     # Navigate using a local URL to avoid network dependency
-    session.send_line(f'Page.navigate {{"url": "{fixture_url}"}}')
+    session.send_line(f'Page.navigate {{"url": "{fixture_url.replace(chr(92), "/")}"}}')
     # Collect output lines -- expect navigate response and event
     lines = []
     try:
