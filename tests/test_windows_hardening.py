@@ -95,3 +95,19 @@ def test_windows_ownership_requires_pid_start_executable_and_profile(monkeypatch
         pid=42, expected_start="different", expected_executable=r"D:\Chrome\chrome.exe",
         expected_profile=r"D:\owned\profile", expected_port=9333,
     )
+
+
+def test_windows_cleanup_leaves_unmarked_profile_directory_untouched(tmp_path, monkeypatch):
+    """An ambiguous D: profile is never removed by the legacy orphan sweep."""
+    from chrome_agent import launcher
+    from chrome_agent.config import resolve_state_paths
+
+    monkeypatch.setattr(launcher.sys, "platform", "win32")
+    paths = resolve_state_paths(str(tmp_path / "state"))
+    unmarked = paths.profiles / "session-ambiguous"
+    unmarked.mkdir(parents=True)
+    (unmarked / "Local State").write_text("not a marker", encoding="utf-8")
+
+    launcher.cleanup_sessions(state_root=str(paths.root))
+
+    assert unmarked.exists()

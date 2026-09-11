@@ -15,7 +15,7 @@ import sys
 import tempfile
 
 from .connection import check_cdp_port
-from .config import resolve_state_paths
+from .config import is_owned_session_directory, resolve_state_paths
 from .registry import REGISTRY_PATH, InstanceInfo, allocate_port, register, cleanup
 from .registry import _load_registry, _resolve_path
 from .utils import process_is_ours, process_is_running, process_start_time
@@ -330,6 +330,12 @@ def cleanup_sessions(registry_path: str | None = None, state_root: str | None = 
             if entry == "registry.json" or entry.endswith(".tmp"):
                 continue
             if session_dir in tracked_dirs:
+                continue
+            # On Windows there is no /proc-based attribution for an orphan
+            # directory.  A directory without our marker is ambiguous rather
+            # than proven stale, so preserve it for explicit human review.
+            if sys.platform == "win32" and not is_owned_session_directory(session_dir, paths):
+                logger.warning("Leaving unverified Windows profile untouched: %s", session_dir)
                 continue
 
             lock_file = os.path.join(session_dir, "SingletonLock")

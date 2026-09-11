@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+  <head><meta charset="utf-8"><title>Safe browser smoke</title></head>
+  <body>
+    <h1 id="ready">Safe wrapper ready</h1>
+    <button id="activate" type="button">Activate</button>
+    <label>Normal test input <input id="note" type="text"></label>
+    <output id="result">idle</output>
+    <script>
+      document.querySelector("#activate").addEventListener("click", () => {
+        document.querySelector("#result").textContent = "clicked";
+      });
+      document.querySelector("#note").addEventListener("input", (event) => {
+        document.querySelector("#result").textContent = event.target.value;
+      });
+    </script>
+  </body>
+</html>
